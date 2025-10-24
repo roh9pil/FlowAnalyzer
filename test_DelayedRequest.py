@@ -103,6 +103,27 @@ class TestRunSimulation(unittest.TestCase):
         self.assertAlmostEqual(sum(wait_times), 0.0, delta=EPSILON)
         self.assertEqual(delayed_count, 0)
 
+    def test_run_simulation_edge_cases(self):
+        """Tests simulation with zero-duration jobs and jobs with the same start time."""
+        jobs = [
+            Job('job_1', 1736090400.0, 1736090400.0, 0), # 10:00:00, zero duration
+            Job('job_2', 1736090400.0, 1736090402.0, 2), # 10:00:00
+        ]
+
+        # With 1 worker:
+        # job1 starts 10:00:00, duration 0s -> finishes 10:00:00. wait: 0
+        # job2 starts 10:00:00, must wait for job1 -> starts 10:00:00. wait: 0. finishes 10:00:02.
+        wait_times, delayed_count = _run_simulation(jobs, num_workers=1)
+        self.assertAlmostEqual(wait_times[0], 0.0, delta=EPSILON)
+        self.assertAlmostEqual(wait_times[1], 0.0, delta=EPSILON)
+        self.assertEqual(delayed_count, 0)
+
+        # With 2 workers:
+        # Both start at 10:00:00. No waiting.
+        wait_times, delayed_count = _run_simulation(jobs, num_workers=2)
+        self.assertAlmostEqual(sum(wait_times), 0.0, delta=EPSILON)
+        self.assertEqual(delayed_count, 0)
+
 
 class TestCalculateMetrics(unittest.TestCase):
     def test_calculate_metrics_valid(self):
