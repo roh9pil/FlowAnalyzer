@@ -15,22 +15,17 @@ EPSILON = 1e-9
 def _prepare_jobs(job_data: List[Tuple[str, str, str]], timestamp_format: str) -> List[Job]:
     """
     Parses raw job data into a sorted list of Job objects.
-    Filters out jobs with invalid start/end times.
+    All jobs are assigned a fixed duration of 5400 seconds.
     """
     jobs = []
+    FIXED_DURATION = 5400.0
     try:
-        for uid, start_str, end_str in job_data:
+        for uid, start_str, _ in job_data:  # end_str is ignored
             start_dt = datetime.strptime(start_str, timestamp_format)
-            end_dt = datetime.strptime(end_str, timestamp_format)
             start_ts = start_dt.timestamp()
-            end_ts = end_dt.timestamp()
 
-            if start_ts > end_ts:
-                print(f"Warning: Job '{uid}' has start_time > end_time. Skipping.")
-                continue
-            
-            duration = end_ts - start_ts
-            jobs.append(Job(uid, start_ts, end_ts, duration))
+            end_ts = start_ts + FIXED_DURATION
+            jobs.append(Job(uid, start_ts, end_ts, FIXED_DURATION))
     except ValueError as e:
         print(f"Error parsing timestamp. Please check the timestamp_format.")
         print(f"Details: {e}")
