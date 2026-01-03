@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta, timezone
 import pandas as pd
+from DelayedRequest import analyze_job_queue
 
 from sqlalchemy import create_engine, text, MetaData, Table
 from sqlalchemy.dialects.postgresql import insert
@@ -21,11 +22,49 @@ TARGET_TABLE = "review_analyzed"
 UPSERT_KEY = "uid"  # ✅ 확정
 
 # -----------------------------
-# 2) Dummy predict function
+# 2) Predict wait time function
 # -----------------------------
-def predict_dummy(df: pd.DataFrame) -> pd.DataFrame:
+
+
+def predict_wait_time(df: pd.DataFrame, num_workers: int) -> pd.DataFrame:
+    """
+    Analyzes job queue performance and adds the average wait time to the DataFrame.
+
+    Assumes the input DataFrame contains the following columns:
+    - uid: A unique identifier for the job.
+    - created_on: The submission time of the job (datetime object).
+    - updated_on: The completion time of the job (datetime object).
+    """
     df = df.copy()
-    df["predict"] = 1
+
+    if df.empty:
+        df["avg_wait_time"] = None
+        return df
+
+    # 1. Transform data for analyze_job_queue
+    # Expected format: List[Tuple[str, str, str]]
+    # (uid, start_time_str, end_time_str)
+    job_data = [
+        (
+            row.uid,
+            row.created_on.strftime("%Y-%m-%dT%H:%M:%S"),
+            row.updated_on.strftime("%Y-%m-%dT%H:%M:%S")
+        )
+        for row in df.itertuples(index=False)
+        if hasattr(row, 'uid') and hasattr(row, 'created_on') and hasattr(row, 'updated_on')
+    ]
+
+    # 2. Call the analysis function
+    results = analyze_job_queue(
+        job_data,
+        num_workers=num_workers,
+        timestamp_format="%Y-%m-%dT%H:%M:%S"
+    )
+
+    # 3. Add results to the DataFrame
+    avg_wait_time = results.get("average_wait_time")
+    df["avg_wait_time"] = avg_wait_time
+
     return df
 
 # -----------------------------
@@ -191,7 +230,7 @@ def main():
             return
 
         print("[INFO] Applying transformation (dummy predict=1)...")
-        df = predict_dummy(df)
+        df = predict_wait_time(df, num_workers=2)
 
         print("[INFO] Ensuring target schema/table/constraints...")
         ensure_target_ready(engine, df)
