@@ -2,7 +2,9 @@ import heapq
 import numpy as np
 from collections import namedtuple
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
+import os
+import csv
 
 # A simple data structure for a job.
 # Timestamps are stored as numeric Unix timestamps (seconds since epoch).
@@ -41,35 +43,56 @@ def _prepare_jobs(job_data: List[Tuple[str, str, str]], timestamp_format: str) -
     return jobs
 
 
-def _run_simulation(jobs: List[Job], num_workers: int) -> Tuple[List[float], int]:
+def _run_simulation(
+    jobs: List[Job],
+    initial_num_workers: int,
+    parallelism_map: Optional[Dict[str, int]] = None
+) -> Tuple[List[float], int]:
     """
-    Runs the core job queue simulation logic.
-    Returns a list of wait times and the count of delayed jobs.
+    Runs the core job queue simulation logic with dynamic worker counts.
     """
-    # Initialize worker availability times. The heap stores the time when a worker becomes free.
-    # Start all workers at the time the first job is submitted.
     first_job_start_time = jobs[0].start_time
-    worker_finish_times = [first_job_start_time] * num_workers
+    worker_finish_times = [first_job_start_time] * initial_num_workers
     heapq.heapify(worker_finish_times)
     
     wait_times = []
     delayed_job_count = 0
 
-    for job in jobs:
-        # Get the earliest time a worker is free
-        earliest_worker_free_time = heapq.heappop(worker_finish_times)
+    current_date_str = datetime.fromtimestamp(first_job_start_time).strftime('%Y-%m-%d')
 
-        # A job can only start after it's submitted and a worker is free
+    for job in jobs:
+        job_date_str = datetime.fromtimestamp(job.start_time).strftime('%Y-%m-%d')
+
+        # Adjust worker pool if the date has changed
+        if parallelism_map and job_date_str != current_date_str:
+            current_date_str = job_date_str
+            new_worker_count = parallelism_map.get(job_date_str, len(worker_finish_times))
+
+            # Sync worker times before resizing the pool
+            current_time = job.start_time
+            synced_finish_times = [max(t, current_time) for t in worker_finish_times]
+
+            # Resize the worker pool
+            if new_worker_count > len(synced_finish_times):
+                # Add new workers, available immediately
+                synced_finish_times.extend([current_time] * (new_worker_count - len(synced_finish_times)))
+            elif new_worker_count < len(synced_finish_times):
+                # Remove workers that will finish earliest
+                synced_finish_times.sort(reverse=True) # Sort to remove earliest finishers
+                synced_finish_times = synced_finish_times[:new_worker_count]
+
+            # Re-heapify the list to maintain the heap invariant
+            worker_finish_times = synced_finish_times
+            heapq.heapify(worker_finish_times)
+
+        earliest_worker_free_time = heapq.heappop(worker_finish_times)
         actual_start_time = max(job.start_time, earliest_worker_free_time)
-        
         wait_time = actual_start_time - job.start_time
         wait_times.append(wait_time)
 
-        # If the wait time is positive (greater than a small epsilon), it was delayed.
         if wait_time > EPSILON:
             delayed_job_count += 1
 
-        # The worker will be free after this job is finished
         finish_time = actual_start_time + job.duration
         heapq.heappush(worker_finish_times, finish_time)
 
@@ -109,36 +132,59 @@ def _calculate_metrics(wait_times: List[float], total_jobs: int, delayed_jobs: i
     }
 
 
-def analyze_job_queue(job_data: List[Tuple[str, str, str]], num_workers: int, timestamp_format: str = "%Y-%m-%dT%H:%M:%S") -> Dict[str, Any]:
+def _read_parallelism_map(parallelism_file: str) -> Optional[Dict[str, int]]:
+    """
+    Reads a CSV file and returns a dictionary mapping dates to worker counts.
+    """
+    if not os.path.exists(parallelism_file):
+        print(f"Warning: Parallelism file not found at '{parallelism_file}'.")
+        return None
+
+    parallelism_map = {}
+    try:
+        with open(parallelism_file, mode='r', newline='') as infile:
+            reader = csv.DictReader(infile)
+            for row in reader:
+                parallelism_map[row['date']] = int(row['degree_of_parallelism'])
+        return parallelism_map
+    except (IOError, csv.Error, ValueError) as e:
+        print(f"Error reading or parsing parallelism file: {e}")
+        return None
+
+
+def analyze_job_queue(
+    job_data: List[Tuple[str, str, str]],
+    num_workers: int,
+    timestamp_format: str = "%Y-%m-%dT%H:%M:%S",
+    parallelism_file: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Analyzes a job queueing system with timestamp data and calculates waiting time statistics.
-
-    This function simulates a queue of jobs processed by a fixed number of workers,
-    calculating key performance indicators like wait time and the number of delayed jobs.
-
-    Args:
-        job_data: A list of tuples, where each tuple represents a job
-                  as (uid, start_time_str, end_time_str).
-        num_workers: The number of concurrent workers available to process jobs.
-        timestamp_format: The `strftime` format of the timestamp strings.
-
-    Returns:
-        A dictionary containing the calculated performance metrics. Returns an empty
-        dictionary if timestamp parsing fails.
     """
-    if not job_data or num_workers <= 0:
+    if not job_data:
         return _calculate_metrics([], 0, 0)
 
     try:
         jobs = _prepare_jobs(job_data, timestamp_format)
     except ValueError:
-        return {}  # Error is printed within the helper function
+        return {}
 
-    # If all jobs were filtered out (e.g., invalid times), return empty stats.
     if not jobs:
         return _calculate_metrics([], 0, 0)
 
-    wait_times, delayed_job_count = _run_simulation(jobs, num_workers)
+    parallelism_map = None
+    if parallelism_file:
+        parallelism_map = _read_parallelism_map(parallelism_file)
+
+    initial_date = datetime.fromtimestamp(jobs[0].start_time).strftime('%Y-%m-%d')
+    initial_workers = num_workers
+    if parallelism_map and initial_date in parallelism_map:
+        initial_workers = parallelism_map[initial_date]
+
+    if initial_workers <= 0:
+        return _calculate_metrics([], 0, 0)
+
+    wait_times, delayed_job_count = _run_simulation(jobs, initial_workers, parallelism_map)
 
     return _calculate_metrics(wait_times, len(jobs), delayed_job_count)
 

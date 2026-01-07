@@ -65,7 +65,7 @@ class TestRunSimulation(unittest.TestCase):
             Job('job_2', 1736090401.0, 1736090404.0, 3), # 2025-01-01T10:00:01
         ]
 
-        wait_times, delayed_count = _run_simulation(jobs, num_workers=1)
+        wait_times, delayed_count = _run_simulation(jobs, initial_num_workers=1)
 
         self.assertAlmostEqual(wait_times[0], 0.0, delta=EPSILON)
         self.assertAlmostEqual(wait_times[1], 4.0, delta=EPSILON)
@@ -82,7 +82,7 @@ class TestRunSimulation(unittest.TestCase):
             Job('job_3', 1736090402.0, 1736090408.0, 6), # 10:00:02
         ]
 
-        wait_times, delayed_count = _run_simulation(jobs, num_workers=2)
+        wait_times, delayed_count = _run_simulation(jobs, initial_num_workers=2)
 
         self.assertAlmostEqual(wait_times[0], 0.0, delta=EPSILON) # job1 -> worker1
         self.assertAlmostEqual(wait_times[1], 0.0, delta=EPSILON) # job2 -> worker2
@@ -98,7 +98,7 @@ class TestRunSimulation(unittest.TestCase):
             Job('job_3', 1736090410.0, 1736090412.0, 2), # 10:00:10
         ]
 
-        wait_times, delayed_count = _run_simulation(jobs, num_workers=1)
+        wait_times, delayed_count = _run_simulation(jobs, initial_num_workers=1)
 
         self.assertAlmostEqual(sum(wait_times), 0.0, delta=EPSILON)
         self.assertEqual(delayed_count, 0)
@@ -171,6 +171,46 @@ class TestAnalyzeJobQueue(unittest.TestCase):
         invalid_data = [('job_1', 'invalid-date', '2025-01-01T10:00:05')]
         results = analyze_job_queue(invalid_data, 2, self.timestamp_format)
         self.assertEqual(results, {})
+
+    def test_analyze_job_queue_with_parallelism_file(self):
+        """Tests that the analyzer correctly uses the parallelism file."""
+        # The `daily_parallelism.csv` file specifies 5 workers for 2025-01-01.
+        # With 5 workers, none of the 3 sample jobs should be delayed.
+        results = analyze_job_queue(
+            self.sample_job_data,
+            num_workers=2,  # This should be overridden by the file
+            timestamp_format=self.timestamp_format,
+            parallelism_file='daily_parallelism.csv'
+        )
+        self.assertEqual(results['total_job_count'], 3)
+        self.assertEqual(results['delayed_job_count'], 0) # No delay with 5 workers
+        self.assertAlmostEqual(results['total_wait_time'], 0.0, delta=EPSILON)
+
+    def test_analyze_job_queue_multi_day_with_parallelism(self):
+        """Tests the dynamic worker adjustment across multiple days."""
+        multi_day_job_data = [
+            # Day 1: 5 workers available. These 4 jobs should run concurrently.
+            ('d1_j1', '2025-01-01T10:00:00', '2025-01-01T10:00:05'), # 5s
+            ('d1_j2', '2025-01-01T10:00:01', '2025-01-01T10:00:04'), # 3s
+            ('d1_j3', '2025-01-01T10:00:02', '2025-01-01T10:00:08'), # 6s
+            ('d1_j4', '2025-01-01T10:00:03', '2025-01-01T10:00:07'), # 4s
+
+            # Day 2: 10 workers available. These jobs should not be delayed.
+            ('d2_j1', '2025-01-02T11:00:00', '2025-01-02T11:00:05'), # 5s
+            ('d2_j2', '2025-01-02T11:00:01', '2025-01-02T11:00:04'), # 3s
+        ]
+
+        results = analyze_job_queue(
+            multi_day_job_data,
+            num_workers=1,  # Fallback, should be overridden
+            timestamp_format=self.timestamp_format,
+            parallelism_file='daily_parallelism.csv'
+        )
+
+        self.assertEqual(results['total_job_count'], 6)
+        # With 5 workers on day 1 and 10 on day 2, no jobs should be delayed.
+        self.assertEqual(results['delayed_job_count'], 0)
+        self.assertAlmostEqual(results['total_wait_time'], 0.0, delta=EPSILON)
 
 if __name__ == '__main__':
     unittest.main(argv=['first-arg-is-ignored'], exit=False)
